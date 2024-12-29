@@ -1,40 +1,50 @@
-from data.google_sheet_parser import get_sheet_data
-from scraper.homepage_scraper import get_about_us_link
-from scraper.about_us_scraper import scrape_about_us_content
-import pandas as pd
+from data.google_sheet_parser import get_sheet_data, setup_google_sheets_service, update_sheet_values
+from utils.helpers import process_url
+import logging
+import sys
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('scraper.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 
 def main():
-    # Google Sheets Setup
     credentials_file = "data/url-to-email-445616-cebe4868914f.json"
     spreadsheet_id = "1148jPgP8FSiBC_uB8yuTy0V5VAB_bdfwlN4JS9ZP92s"
-    range_name = "Sheet1!C:C"
+    urls_range = "Sheet1!C:C"
+    output_range = "Sheet1!J2"
 
-    # Fetch data from Google Sheets
-    print("Fetching data from Google Sheets...")
-    urls_df = get_sheet_data(spreadsheet_id, range_name, credentials_file)
-
-    if urls_df.empty:
-        print("No data found in the spreadsheet.")
-        return
-
-    output_data = []
-
-    for url in urls_df['Website']:
-        print(f"Processing {url}...")
-        about_link = get_about_us_link(url)
-        if about_link:
-            print(f"Found 'About Us' page: {about_link}")
-            about_content = scrape_about_us_content(about_link)
-        else:
-            print("No 'About Us' page found. Falling back to homepage content.")
-            about_content = scrape_about_us_content(url)
-
-        output_data.append({"url": url, "about_content": about_content})
-
-    # Save results to a CSV
-    output_file = "data/output_emails.csv"
-    pd.DataFrame(output_data).to_csv(output_file, index=False)
-    print(f"Output saved to {output_file}")
+    try:
+        service = setup_google_sheets_service(credentials_file)
+        logging.info("Fetching data from Google Sheets...")
+        urls_df = get_sheet_data(spreadsheet_id, urls_range, credentials_file)
+        if urls_df.empty:
+            logging.warning("No data found in the spreadsheet.")
+            return
+        values = []
+        total_urls = len(urls_df['Website'])
+        for idx, url in enumerate(urls_df['Website'], 1):
+            try:
+                logging.info(f"Processing URL {idx}/{total_urls}")
+                result = process_url(url)
+                values.append(result)
+            except Exception as e:
+                logging.error(f"Error processing row {idx+1}: {str(e)}")
+                values.append([f"Error: {str(e)}"])
+        if not values:
+            logging.warning("No values to update in the sheet")
+            return
+        logging.info(f"Attempting to update {len(values)} rows in Google Sheet...")
+        update_sheet_values(service, spreadsheet_id, output_range, values)
+        logging.info("Script completed successfully")
+    except Exception as e:
+        logging.error(f"Script failed: {str(e)}")
+        raise
 
 if __name__ == "__main__":
     main()
