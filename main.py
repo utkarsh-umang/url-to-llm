@@ -24,19 +24,6 @@ def main():
     urls_range = "Sheet1!C:C"
     openai_api_key = os.getenv('OPENAI_API_KEY')
 
-    # Custom prompt for GPT
-    gpt_prompt = """
-    Analyze the following website content and extract:
-    1. The main business/organization type
-    2. Key products or services
-    3. Target audience or market
-    
-    Format the response as:
-    Business Type: [type]
-    Products/Services: [key offerings]
-    Target Market: [audience]
-    """
-
     try:
         service = setup_google_sheets_service(credentials_file)
         logging.info("Fetching data from Google Sheets...")
@@ -63,22 +50,25 @@ def main():
 
         # PHASE 2: Process with GPT
         logging.info("Phase 2: Starting GPT processing...")
-        content_data = get_sheet_data(spreadsheet_id, "Sheet1!J2:J", credentials_file)
-        for idx, content_row in enumerate(content_data.values, 1):
+        data_a = get_sheet_data(spreadsheet_id, "Sheet1!A2:A", credentials_file)
+        data_j = get_sheet_data(spreadsheet_id, "Sheet1!J2:J", credentials_file)
+        for idx, (row_a, row_j) in enumerate(zip(data_a.values, data_j.values), 1):
             try:
-                content = content_row[0] if content_row else "No content"
-                if content and not content.startswith("Error"):
+                content_a = row_a[0] if row_a else "No content"
+                content_j = row_j[0] if row_j else "No content"
+                if (content_j and not content_j.startswith("Error")):
                     logging.info(f"Processing content with GPT {idx}/{total_urls}")
-                    gpt_result = process_with_gpt(content, gpt_prompt, openai_api_key)
+                    combined_content = f"Person Name: {content_a}\n\nWebsite Content: {content_j}"
+                    gpt_result = process_with_gpt(combined_content, openai_api_key)
                     update_sheet_values(service, spreadsheet_id, f"Sheet1!K{idx+1}:K{idx+1}", [[str(gpt_result)]])
                     logging.info(f"Successfully processed and stored GPT result for row {idx}")
                 else:
                     logging.warning(f"Skipping GPT processing for row {idx} due to invalid content")
-                    update_sheet_values(service, spreadsheet_id, f"Sheet1!K{idx+1}", [["No valid content to analyze"]])
+                    update_sheet_values(service, spreadsheet_id, f"Sheet1!K{idx+1}:K{idx+1}", [["No valid content to analyze"]])
             except Exception as e:
                 error_message = f"GPT Error: {str(e)}"
                 logging.error(f"Error in GPT processing for row {idx}: {error_message}")
-                update_sheet_values(service, spreadsheet_id, f"Sheet1!K{idx+1}", [[error_message]])
+                update_sheet_values(service, spreadsheet_id, f"Sheet1!K{idx+1}:K{idx+1}", [[error_message]])
         logging.info("Phase 2 completed: All content processed with GPT.")
         logging.info("Script completed successfully")
     except Exception as e:
