@@ -1,6 +1,8 @@
 from data.google_sheet_parser import get_sheet_data, setup_google_sheets_service, update_sheet_values
 from llm_utils.gpt_connector import process_with_gpt
 from utils.helpers import process_url
+from linkedin_utils.linkedin_parser import process_profiles
+from linkedin_utils.linkedin_sheet_parser import get_linkedin_profiles, update_linkedin_status
 import logging
 import sys
 import os
@@ -18,7 +20,7 @@ logging.basicConfig(
 
 load_dotenv()
 
-def main():
+def website_to_llm():
     credentials_file = "data/url-to-email-445616-cebe4868914f.json"
     spreadsheet_id = "1148jPgP8FSiBC_uB8yuTy0V5VAB_bdfwlN4JS9ZP92s"
     urls_range = "Sheet1!C:C"
@@ -74,6 +76,45 @@ def main():
         logging.info("Script completed successfully")
     except Exception as e:
         logging.error(f"Script failed: {str(e)}")
+        raise
+
+
+def process_linkedin_profiles():
+    """Process LinkedIn profiles from the Google Sheet"""
+    credentials_file = "data/url-to-email-445616-cebe4868914f.json"
+    spreadsheet_id = "1D7vcjKF-x05bnr_UBa6LwsyNNl2hdM7K5eFtXOd25ZQ"
+
+    try:
+        # Initialize Google Sheets service
+        service = setup_google_sheets_service(credentials_file)
+        
+        # Get LinkedIn profile data from sheet
+        profiles = get_linkedin_profiles(
+            service,
+            spreadsheet_id
+        )
+        
+        if not profiles:
+            logging.warning("No profiles found to process")
+            return
+            
+        # Process profiles and validate them
+        results = process_profiles(profiles)
+        
+        # Update sheet with results
+        for result in results:
+            status = "Validated" if result['is_valid'] else f"Invalid: {result['message']}"
+            update_linkedin_status(
+                service,
+                spreadsheet_id,
+                result['row_index'],
+                status
+            )
+            
+        logging.info(f"Processed {len(results)} LinkedIn profiles")
+        
+    except Exception as e:
+        logging.error(f"LinkedIn profile processing failed: {str(e)}")
         raise
 
 if __name__ == "__main__":
