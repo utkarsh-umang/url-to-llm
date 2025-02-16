@@ -1,11 +1,13 @@
 from data.google_sheet_parser import get_sheet_data, setup_google_sheets_service, update_sheet_values
 from llm_utils.gpt_connector import process_with_gpt
 from utils.helpers import process_url
-from linkedin_utils.linkedin_parser import process_profiles
+from linkedin_utils.linkedin_parser import setup_driver, login_to_linkedin, check_connection_status, validate_profile, send_connection_request
 from linkedin_utils.linkedin_sheet_parser import get_linkedin_profiles, update_linkedin_status
 import logging
 import sys
 import os
+import random
+import time
 from dotenv import load_dotenv
 
 # Set up logging
@@ -22,8 +24,8 @@ load_dotenv()
 
 def website_to_llm():
     credentials_file = "data/url-to-email-445616-cebe4868914f.json"
-    spreadsheet_id = "1148jPgP8FSiBC_uB8yuTy0V5VAB_bdfwlN4JS9ZP92s"
-    urls_range = "Sheet1!C:C"
+    spreadsheet_id = "1gySRQsDX4J-v7QBM4YiCymU7EEyEj8BmKaVpOVsFXiY"
+    urls_range = "Sheet1!F:F"
     openai_api_key = os.getenv('OPENAI_API_KEY')
 
     try:
@@ -36,42 +38,49 @@ def website_to_llm():
 
         # PHASE 1: Scrape URLs and write content immediately
         logging.info("Phase 1: Starting URL scraping...")
-        total_urls = len(urls_df['Website'])
-        for idx, url in enumerate(urls_df['Website'], 1):
-            try:
-                logging.info(f"Scraping URL {idx}/{total_urls}: {url}")
-                content_result = process_url(url)
-                content_to_write = [[str(content_result) if content_result is not None else ""]]
-                update_sheet_values(service, spreadsheet_id, f"Sheet1!J{idx+1}:J{idx+1}", content_to_write)
-                logging.info(f"Successfully scraped and stored content for URL {idx}")
-            except Exception as e:
-                error_message = f"Error: {str(e)}"
-                logging.error(f"Error scraping URL at row {idx+1}: {error_message}")
-                update_sheet_values(service, spreadsheet_id, f"Sheet1!J{idx+1}", [[error_message]])
+        # total_urls = len(urls_df['Website'])
+        # for idx, url in enumerate(urls_df['Website'], 1):
+        #     try:
+        #         logging.info(f"Scraping URL {idx}/{total_urls}: {url}")
+        #         content_result = process_url(url)
+        #         content_to_write = [[str(content_result) if content_result is not None else ""]]
+        #         update_sheet_values(service, spreadsheet_id, f"Sheet1!K{idx+1}:K{idx+1}", content_to_write)
+        #         logging.info(f"Successfully scraped and stored content for URL {idx}")
+        #     except Exception as e:
+        #         error_message = f"Error: {str(e)}"
+        #         logging.error(f"Error scraping URL at row {idx+1}: {error_message}")
+        #         update_sheet_values(service, spreadsheet_id, f"Sheet1!K{idx+1}", [[error_message]])
         logging.info("Phase 1 completed: All URLs scraped and content stored.")
 
         # PHASE 2: Process with GPT
         logging.info("Phase 2: Starting GPT processing...")
         data_a = get_sheet_data(spreadsheet_id, "Sheet1!A1:A", credentials_file)
-        data_j = get_sheet_data(spreadsheet_id, "Sheet1!J1:J", credentials_file)
+        data_j = get_sheet_data(spreadsheet_id, "Sheet1!K1:K", credentials_file)
         for i in range(len(data_a.values)):
             try:
                 current_row = i + 2
                 content_a = data_a.values[i][0] if data_a.values[i] else "No content"
                 content_j = data_j.values[i][0] if data_j.values[i] else "No content"
+                if isinstance(content_j, list):
+                    if any("No content found" in str(item) for item in content_j):
+                        logging.info(f"Skipping row {current_row} due to 'No content found'")
+                        continue
+                elif "No content found" in str(content_j):
+                    logging.info(f"Skipping row {current_row} due to 'No content found'")
+                    continue
                 if (content_j and not content_j.startswith("Error")):
                     logging.info(f"Processing content with GPT for row {current_row}")
                     combined_content = f"Person Name: {content_a}\n\nWebsite Content: {content_j}"
                     gpt_result = process_with_gpt(combined_content, openai_api_key)
-                    update_sheet_values(service, spreadsheet_id, f"Sheet1!K{current_row}:K{current_row}", [[str(gpt_result)]])
+                    update_sheet_values(service, spreadsheet_id, f"Sheet1!N{current_row}:N{current_row}", [[str(gpt_result)]])
                     logging.info(f"Successfully processed and stored GPT result for row {current_row}")
                 else:
                     logging.warning(f"Skipping GPT processing for row {current_row} due to invalid content")
-                    update_sheet_values(service, spreadsheet_id, f"Sheet1!K{current_row}:K{current_row}", [["No valid content to analyze"]])
+                    update_sheet_values(service, spreadsheet_id, f"Sheet1!N{current_row}:N{current_row}", [["No valid content to analyze"]])
             except Exception as e:
                 error_message = f"GPT Error: {str(e)}"
                 logging.error(f"Error in GPT processing for row {current_row}: {error_message}")
-                update_sheet_values(service, spreadsheet_id, f"Sheet1!K{current_row}:K{current_row}", [[error_message]])
+                # update_sheet_values(service, spreadsheet_id, f"Sheet1!L{current_row}:L{current_row}", [[error_message]])
         logging.info("Phase 2 completed: All content processed with GPT.")
         logging.info("Script completed successfully")
     except Exception as e:
@@ -83,8 +92,21 @@ def process_linkedin_profiles():
     """Process LinkedIn profiles from the Google Sheet"""
     credentials_file = "data/url-to-email-445616-cebe4868914f.json"
     spreadsheet_id = "1D7vcjKF-x05bnr_UBa6LwsyNNl2hdM7K5eFtXOd25ZQ"
+    daily_requests_sent = 0
+    MAX_DAILY_REQUESTS = 15
+
+    driver = None
 
     try:
+        # Initialize webdriver
+        driver = setup_driver()
+        if not driver:
+            raise Exception("Failed to initialize web driver")
+        
+        # Login to Linkedin
+        if not login_to_linkedin(driver, os.getenv('LINKEDIN_EMAIL'), os.getenv('LINKEDIN_PASSWORD')):
+            raise Exception("Failed to login to LinkedIn")
+
         # Initialize Google Sheets service
         service = setup_google_sheets_service(credentials_file)
         
@@ -96,26 +118,54 @@ def process_linkedin_profiles():
         
         if not profiles:
             logging.warning("No profiles found to process")
-            return
-            
-        # Process profiles and validate them
-        results = process_profiles(profiles)
-        
-        # Update sheet with results
-        for result in results:
-            status = "Validated" if result['is_valid'] else f"Invalid: {result['message']}"
-            update_linkedin_status(
-                service,
-                spreadsheet_id,
-                result['row_index'],
-                status
-            )
-            
-        logging.info(f"Processed {len(results)} LinkedIn profiles")
+            return  
+
+        for profile in profiles:
+            try:
+                # Random delay between profiles
+                sleep_duration = random.uniform(30, 60)
+                print(f"Waiting {sleep_duration:.2f}s before next profile")
+                time.sleep(sleep_duration)
+
+                # Check current status
+                status = check_connection_status(driver, profile['url'])
+
+                if status in ["Connected", "Pending"]:
+                    update_linkedin_status(service, spreadsheet_id, profile['row_index'], status)
+                    continue
+
+                # Validate Profile
+                # is_valid, message = validate_profile(
+                #     driver,
+                #     profile['url'],
+                #     profile['first_name'],
+                #     profile['last_name']
+                # )
+
+                # if not is_valid:
+                #     update_linkedin_status(service, spreadsheet_id, profile['row_index'], "Incorrect Profile")
+                #     continue
+
+                # Send connection Request
+                request_status = send_connection_request(driver, profile['url'], daily_requests_sent, MAX_DAILY_REQUESTS)
+                update_linkedin_status(service, spreadsheet_id, profile['row_index'], request_status)
+
+                if request_status == "Request Sent":
+                    daily_requests_sent += 1
+
+                if request_status == "Daily Limit Reached":
+                    logging.info("Daily connection request limit reached, Stopping!")
+                    break
+
+            except Exception as e:
+                logging.error(f"Error processing profile {profile['url']}: {str(e)}")
+                update_linkedin_status(service, spreadsheet_id, profile['row_index'], f"Error: {str(e)}")
         
     except Exception as e:
         logging.error(f"LinkedIn profile processing failed: {str(e)}")
-        raise
+    finally: 
+        if driver:
+            driver.quit()
 
 if __name__ == "__main__":
-    main()
+    process_linkedin_profiles()
